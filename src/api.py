@@ -11,6 +11,7 @@ from datetime import datetime, date
 import uuid
 import os
 from sqlalchemy import func
+from fastapi.responses import Response
 
 from .database import get_db
 from .models import Doctor, Dialogue, Message, Citation, Patient, ClinicalGuideline, ChunkMetadata, Role, AuditLog
@@ -306,8 +307,18 @@ def get_guidelines(db: Session = Depends(get_db), current_doctor=Depends(auth_ha
     if current_doctor.role_id != 2:
         raise HTTPException(status_code=403, detail="Admin access required")
     guidelines = db.query(ClinicalGuideline).order_by(ClinicalGuideline.id.desc()).all()
-    return [{"id": g.id, "title": g.title, "version": g.version, "year": g.year, "is_active": g.is_active} for g in guidelines]
-
+    return [
+        {
+            "id": g.id,
+            "title": g.title,
+            "version": g.version,
+            "year": g.year,
+            "is_active": g.is_active,
+            "total_chunks": g.total_chunks or 0,
+            "total_pages": g.total_pages or 0
+        }
+        for g in guidelines
+    ]
 
 @router.get("/admin/status")
 def admin_status(db: Session = Depends(get_db), current_doctor=Depends(auth_handler.get_current_user)):
@@ -316,3 +327,255 @@ def admin_status(db: Session = Depends(get_db), current_doctor=Depends(auth_hand
     active = db.query(ClinicalGuideline).filter(ClinicalGuideline.is_active == True).count()
     total = db.query(ClinicalGuideline).count()
     return {"active_guidelines": active, "total_guidelines": total}
+
+
+@router.get("/dialogues/{dialogue_id}/export")
+def export_dialogue(
+    dialogue_id: int,
+    db: Session = Depends(get_db),
+    current_doctor = Depends(auth_handler.get_current_user)
+):
+    from .export_pdf import export_dialogue_to_pdf
+    try:
+        pdf_bytes = export_dialogue_to_pdf(db, dialogue_id)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=dialogue_{dialogue_id}.pdf"}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/admin/dialogues")
+def get_admin_dialogues(
+        limit: int = 50,
+        offset: int = 0,
+        doctor_id: Optional[int] = None,
+        patient_id: Optional[int] = None,
+        db: Session = Depends(get_db),
+        current_doctor=Depends(auth_handler.get_current_user)
+):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    query = db.query(Dialogue)
+
+    if doctor_id:
+        query = query.filter(Dialogue.doctor_id == doctor_id)
+    if patient_id:
+        query = query.filter(Dialogue.patient_id == patient_id)
+
+    total = query.count()
+    dialogues = query.order_by(Dialogue.id.desc()).offset(offset).limit(limit).all()
+
+    result = []
+    for d in dialogues:
+        doctor = db.query(Doctor).filter(Doctor.id == d.doctor_id).first()
+        patient = db.query(Patient).filter(Patient.id == d.patient_id).first() if d.patient_id else None
+        messages_count = db.query(Message).filter(Message.dialogue_id == d.id).count()
+
+        result.append({
+            "id": d.id,
+            "session_uuid": str(d.session_uuid),
+            "doctor_name": doctor.full_name if doctor else None,
+            "patient_name": patient.full_name if patient else None,
+            "started_at": d.started_at.isoformat() if d.started_at else None,
+            "ended_at": d.ended_at.isoformat() if d.ended_at else None,
+            "status": d.status,
+            "message_count": messages_count
+        })
+
+    return {"total": total, "dialogues": result}
+
+
+@router.get("/admin/doctors")
+def get_admin_doctors(db: Session = Depends(get_db), current_doctor=Depends(auth_handler.get_current_user)):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    doctors = db.query(Doctor).all()
+    return [
+        {
+            "id": d.id,
+            "login": d.login,
+            "full_name": d.full_name,
+            "specialty": d.specialty,
+            "is_active": d.is_active,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+            "last_login": d.last_login.isoformat() if d.last_login else None
+        }
+        for d in doctors
+    ]
+
+
+from fastapi import UploadFile, File, Form
+
+
+@router.post("/admin/upload")
+async def upload_guideline(
+        file: UploadFile = File(...),
+        title: str = Form(...),
+        version: str = Form(...),
+        year: int = Form(...),
+        db: Session = Depends(get_db),
+        current_doctor=Depends(auth_handler.get_current_user)
+):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    content = await file.read()
+    from .admin import admin_service
+    result = admin_service.upload_guideline(
+        db, content, file.filename, title, version, year, current_doctor.id
+    )
+    if result["success"]:
+        return {"message": "OK", "guideline_id": result["guideline_id"]}
+    else:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+
+@router.post("/admin/reindex-all")
+def reindex_all_guidelines(
+        db: Session = Depends(get_db),
+        current_doctor=Depends(auth_handler.get_current_user)
+):
+    """Переиндексация всех клинических рекомендаций"""
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from .admin import admin_service
+    from .models import ClinicalGuideline
+
+    guidelines = db.query(ClinicalGuideline).filter(ClinicalGuideline.is_active == True).all()
+
+    results = []
+    for guideline in guidelines:
+        try:
+            success = admin_service.reindex_guideline(db, guideline.id)
+            results.append({
+                "guideline_id": guideline.id,
+                "title": guideline.title,
+                "success": success
+            })
+        except Exception as e:
+            results.append({
+                "guideline_id": guideline.id,
+                "title": guideline.title,
+                "success": False,
+                "error": str(e)
+            })
+
+    return {"success": True, "results": results}
+
+
+@router.get("/admin/audit-logs")
+def get_audit_logs(
+        limit: int = 50,
+        offset: int = 0,
+        action_type: Optional[str] = None,
+        from_date: Optional[str] = None,
+        db: Session = Depends(get_db),
+        current_doctor=Depends(auth_handler.get_current_user)
+):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    query = db.query(AuditLog)
+
+    if action_type:
+        query = query.filter(AuditLog.action_type == action_type)
+    if from_date:
+        query = query.filter(AuditLog.timestamp >= from_date)
+
+    total = query.count()
+    logs = query.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit).all()
+
+    result = []
+    for log in logs:
+        doctor = db.query(Doctor).filter(Doctor.id == log.doctor_id).first()
+        result.append({
+            "id": log.id,
+            "action_type": log.action_type,
+            "action_details": log.action_details,
+            "doctor_login": doctor.login if doctor else None,
+            "patient_id": log.patient_id,
+            "ip_address": str(log.ip_address) if log.ip_address else None,
+            "user_agent": log.user_agent,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "is_abnormal": log.is_abnormal,
+            "abnormal_reason": log.abnormal_reason
+        })
+
+    return {"total": total, "logs": result}
+
+
+@router.get("/admin/stats")
+def get_admin_stats(db: Session = Depends(get_db), current_doctor=Depends(auth_handler.get_current_user)):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from sqlalchemy import func
+
+    doctors_total = db.query(Doctor).count()
+    doctors_active = db.query(Doctor).filter(Doctor.is_active == True).count()
+    patients_total = db.query(Patient).count()
+    dialogues_total = db.query(Dialogue).count()
+    messages_total = db.query(Message).count()
+    queries_total = db.query(Message).filter(Message.sender == "user").count()
+    assistant_total = db.query(Message).filter(Message.sender == "assistant").count()
+    avg_confidence = db.query(func.avg(Message.confidence)).filter(Message.confidence.isnot(None)).scalar() or 0
+    guidelines_total = db.query(ClinicalGuideline).count()
+    guidelines_active = db.query(ClinicalGuideline).filter(ClinicalGuideline.is_active == True).count()
+    chunks_total = db.query(ChunkMetadata).count()
+
+    return {
+        "doctors": {"total": doctors_total, "active": doctors_active},
+        "patients": patients_total,
+        "dialogues": dialogues_total,
+        "messages": {
+            "total": messages_total,
+            "queries": queries_total,
+            "assistant_responses": assistant_total
+        },
+        "avg_confidence": float(avg_confidence),
+        "guidelines": {"total": guidelines_total, "active": guidelines_active},
+        "chunks": chunks_total
+    }
+
+
+@router.get("/admin/roles")
+def get_admin_roles(db: Session = Depends(get_db), current_doctor=Depends(auth_handler.get_current_user)):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    roles = db.query(Role).all()
+    result = []
+    for role in roles:
+        doctors_count = db.query(Doctor).filter(Doctor.role_id == role.id).count()
+        result.append({
+            "id": role.id,
+            "role_name": role.role_name,
+            "description": role.description,
+            "doctors_count": doctors_count
+        })
+
+    return result
+
+
+@router.post("/admin/reindex/{guideline_id}")
+def reindex_guideline(
+        guideline_id: int,
+        db: Session = Depends(get_db),
+        current_doctor=Depends(auth_handler.get_current_user)
+):
+    if current_doctor.role_id != 2:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from .admin import admin_service
+    success = admin_service.reindex_guideline(db, guideline_id)
+
+    if success:
+        return {"success": True}
+    else:
+        raise HTTPException(status_code=400, detail="Reindex failed")
