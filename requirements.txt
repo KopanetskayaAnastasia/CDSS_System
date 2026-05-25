@@ -35,3 +35,6 @@ alembic==1.13.0
 # Utils
 aiofiles==23.2.1
 tiktoken==0.5.1
+
+#Export PDF
+reportlab==4.0.4

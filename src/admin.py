@@ -154,7 +154,7 @@ class AdminService:
 
             db.commit()
 
-            # Обновление BM25
+            # Обновление BM25 после загрузки КР
             from .retriever import retriever
             retriever.refresh_bm25()
 

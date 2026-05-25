@@ -279,7 +279,7 @@ def guidelines_page():
     st.markdown("---")
 
     for g in guidelines:
-        col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+        col1, col2, col3, col4, col5, col6 = st.columns([3, 1, 1, 1, 1, 1])
         with col1:
             st.markdown(f"**{g['title']}**")
             st.caption(f"Версия: {g['version']} ({g['year']}) | ID: {g['id']}")
@@ -292,6 +292,19 @@ def guidelines_page():
                 requests.put(f"{API_URL}/admin/guidelines/{g['id']}/toggle", headers=headers)
                 st.rerun()
         with col5:
+            if st.button("🔄 Переинд", key=f"reindex_{g['id']}"):
+                headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                response = requests.post(
+                    f"{API_URL}/admin/reindex/{g['id']}",
+                    headers=headers,
+                    timeout=300
+                )
+                if response.status_code == 200:
+                    st.success(f"✅ {g['title']} переиндексирована")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Ошибка")
+        with col6:
             if st.button("🗑️ Удалить", key=f"del_cr_{g['id']}"):
                 if st.checkbox(f"Подтвердить удаление {g['title']}", key=f"confirm_{g['id']}"):
                     requests.delete(f"{API_URL}/admin/guidelines/{g['id']}", headers=headers)
@@ -510,7 +523,7 @@ def reindex_all_page():
             response = requests.post(
                 f"{API_URL}/admin/reindex-all",
                 headers=headers,
-                timeout=10
+                timeout=600  # ← ИЗМЕНИТЬ с 10 на 600
             )
 
         if response.status_code == 200:
@@ -518,6 +531,8 @@ def reindex_all_page():
             st.info("Статус можно проверить через 5-10 минут в разделе 'Статус базы знаний'")
         else:
             st.error(f"❌ Ошибка: {response.json().get('detail', 'Неизвестная ошибка')}")
+
+
 def admin_panel():
     admin_tabs = st.tabs([
         "📄 Загрузить КР",
@@ -751,12 +766,36 @@ def admin_dialogues_page():
 
         for d in dialogues:
             with st.expander(
-                    f"💬 {d.get('started_at', '?')[:19]} | Врач: {d.get('doctor_name', '?')} | Пациент: {d.get('patient_name', 'Без пациента')} | Сообщений: {d.get('message_count', 0)}"):
-                # Просмотр деталей диалога
-                if st.button(f"📖 Открыть диалог #{d.get('id')}", key=f"open_{d.get('id')}"):
-                    # Здесь можно добавить модальное окно с деталями
-                    st.info(f"Диалог ID: {d.get('id')}, сессия: {d.get('session_uuid', '?')}")
-                st.caption(f"Статус: {d.get('status', 'unknown')}")
+                    f"💬 Диалог #{d.get('id')} | Врач: {d.get('doctor_name', '?')} | Пациент: {d.get('patient_name', 'Без пациента')} | Сообщений: {d.get('message_count', 0)}"):
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.caption(f"Статус: {d.get('status', 'unknown')}")
+                    st.caption(f"Дата: {d.get('started_at', '?')[:19] if d.get('started_at') else '?'}")
+
+                with col2:
+                    # КНОПКА ЭКСПОРТА PDF
+                    if st.button(f"📎 Экспорт в PDF", key=f"export_{d.get('id')}"):
+                        try:
+                            headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                            export_response = requests.get(
+                                f"{API_URL}/dialogues/{d.get('id')}/export",
+                                headers=headers,
+                                timeout=30
+                            )
+                            if export_response.status_code == 200:
+                                st.download_button(
+                                    label="📥 Скачать PDF",
+                                    data=export_response.content,
+                                    file_name=f"dialogue_{d.get('id')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                    mime="application/pdf",
+                                    key=f"download_{d.get('id')}"
+                                )
+                            else:
+                                st.error(f"Ошибка: {export_response.status_code}")
+                        except Exception as e:
+                            st.error(f"Ошибка экспорта: {e}")
     else:
         st.error("Не удалось загрузить диалоги")
 
