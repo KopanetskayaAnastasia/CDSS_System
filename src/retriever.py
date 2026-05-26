@@ -123,6 +123,8 @@ class HybridMedicalRetriever:
                 self.bm25_index.fit(self._all_texts)
                 self._bm25_initialized = True
                 logger.info(f"BM25 refreshed with {len(self._all_texts)} documents")
+                print("BM25 refreshed successfully")
+                print("FHIR integration: refresh called")
         except Exception as e:
             logger.error(f"BM25 refresh failed: {e}")
 
@@ -224,7 +226,6 @@ class HybridMedicalRetriever:
         if result:
             logger.info(f"Found {len(result)} relevant chunks, top score: {result[0]['score']:.3f}")
 
-        print(f"FHIR integration: found {len(result)} chunks")
         return result
 
 
