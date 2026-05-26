@@ -224,6 +224,7 @@ class HybridMedicalRetriever:
         if result:
             logger.info(f"Found {len(result)} relevant chunks, top score: {result[0]['score']:.3f}")
 
+        print(f"FHIR integration: found {len(result)} chunks")
         return result
 
 
