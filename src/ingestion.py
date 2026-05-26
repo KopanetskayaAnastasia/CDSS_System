@@ -168,6 +168,18 @@ class PDFIngestionPipeline:
         logger.info(f"Split into {len(chunks)} chunks")
         return chunks
 
+    def extract_text_with_docling(self, file_path: str):
+        try:
+            from docling.document_converter import DocumentConverter
+            converter = DocumentConverter()
+            result = converter.convert(file_path)
+            text = result.document.export_to_text()
+            total_pages = len(result.document.pages) if hasattr(result.document, 'pages') else 0
+            return text, total_pages
+        except ImportError:
+            text = self.extract_text_from_pdf(file_path)
+            return text, 0
+
     def split_into_chunks(self, text: str) -> List[Dict[str, Any]]:
         """Разбивка текста на чанки (по словам, для совместимости)"""
         if not text or not text.strip():
