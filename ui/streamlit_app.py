@@ -329,6 +329,24 @@ def patients_page():
                 requests.post(f"{API_URL}/patients", json={"full_name": full_name, "snils": snils, "policy_number": policy_number, "date_of_birth": date_of_birth.isoformat() if date_of_birth else None}, headers=headers)
                 st.rerun()
 
+    with st.expander("🔄 Импорт из МИС", expanded=False):
+        with st.form("import_from_mis_form"):
+            snils = st.text_input("СНИЛС пациента")
+            submitted = st.form_submit_button("🔍 Найти и импортировать")
+            if submitted and snils:
+                headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                response = requests.post(
+                    f"{API_URL}/import-patient-from-mis",
+                    params={"snils": snils},
+                    headers=headers,
+                    timeout=30
+                )
+                if response.status_code == 200 and response.json().get("success"):
+                    st.success(f"✅ Пациент импортирован: {response.json()['patient']['full_name']}")
+                    st.rerun()
+                else:
+                    st.error("❌ Пациент не найден в МИС")
+
     st.markdown("### 📋 Список пациентов")
     headers = {"Authorization": f"Bearer {st.session_state.token}"}
     response = requests.get(f"{API_URL}/patients", headers=headers)

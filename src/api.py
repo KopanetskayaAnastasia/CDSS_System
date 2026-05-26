@@ -579,3 +579,30 @@ def reindex_guideline(
         return {"success": True}
     else:
         raise HTTPException(status_code=400, detail="Reindex failed")
+
+
+
+@router.post("/import-patient-from-mis")
+def import_patient_from_mis(
+    snils: str,
+    db: Session = Depends(get_db),
+    current_doctor = Depends(auth_handler.get_current_user)
+):
+    from .integration.fhir_client import get_fhir_client
+
+    if not snils or len(snils) < 10:
+        raise HTTPException(status_code=400, detail="Неверный формат СНИЛС")
+
+    client = get_fhir_client()
+    patient = client.import_patient_to_db(db, snils)
+
+    if patient:
+        return {
+            "success": True,
+            "patient": {
+                "id": patient.id,
+                "full_name": patient.full_name,
+                "snils": patient.snils
+            }
+        }
+    return {"success": False, "error": "Пациент не найден в МИС"}
